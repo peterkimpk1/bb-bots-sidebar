@@ -13,6 +13,7 @@ import { registerBotMentions } from "./lib/bot-mentions";
 import { listBotConversations } from "./lib/bot-conversations";
 import { botProjectContext } from "./lib/project-context";
 import { handoffStartRequest, type BotStartRequest } from "./lib/handoff";
+import { avatarMarkup } from "./lib/avatar-markup";
 import { ownedConversationProjectId } from "./lib/worktree-launch";
 import { BOT_GUIDANCE, botInstructions } from "./lib/bot-instructions";
 import { MEMORY_MAX_CHARS, validateMemory } from "./lib/memory-limit";
@@ -346,6 +347,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (!section) throw new Error("Section no longer exists");
       const next = { ...section, name }; store.saveSections(saved.map((entry) => entry.id === sectionId ? next : entry)); publish(); return next;
     }),
+    bot_avatar_markup: async ({ size }) => ({ avatars: store.list().map((bot) => ({ botId: bot.id, ...avatarMarkup(bot, size) })) }),
     bot_delete: ({ botId, confirmName }) => serial(botId, async () => {
       const bot = store.require(botId);
       if (bot.name !== confirmName) throw new Error("confirmName must match the bot's exact name");

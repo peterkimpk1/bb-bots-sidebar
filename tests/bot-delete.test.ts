@@ -26,3 +26,15 @@ it("deletes a bot with its bindings and project roles, and leaves its conversati
   expect(host.store.get(kept.id)).toBeTruthy();
   expect(host.store.owner("other")).toBe(kept.id);
 });
+
+it("renders each bot's avatar as static SVG in idle and working states", async () => {
+  const host = await backend(); hosts.push(host);
+  const bot = await host.create("Atlas");
+  const { avatars } = await host.harness.behavior.callRpc("bot_avatar_markup", { size: 26 }) as { avatars: { botId: string; idle: string; working: string }[] };
+  const [entry] = avatars;
+  expect(entry!.botId).toBe(bot.id);
+  expect(entry!.idle).toMatch(/^<svg[^>]*class="bot-avatar bot-motion-\w+ bot-state-idle bot-idle-\d"/);
+  expect(entry!.idle).toContain(`data-shape="${bot.avatar.shape}"`);
+  expect(entry!.idle).toContain('width="26"');
+  expect(entry!.working).toContain("bot-state-working");
+});
