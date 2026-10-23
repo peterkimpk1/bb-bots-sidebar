@@ -1,7 +1,13 @@
+import * as ReactRuntime from "react";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { BotIcon } from "../components/bot-icon";
 import type { BotMetadata } from "../contract";
+
+// bb's server bundle compiles JSX in classic mode (React.createElement) despite
+// tsconfig's react-jsx, so the avatar component needs React in scope here. The
+// app bundle and the tests use the automatic runtime and never read this.
+(globalThis as { React?: typeof ReactRuntime }).React ??= ReactRuntime;
 
 // Static SVG of the sidebar avatar, for clients that can't load this plugin's
 // components (another plugin's sidebar). Classes match the in-plugin avatar,
