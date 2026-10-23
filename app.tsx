@@ -124,10 +124,17 @@ function useBotData() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refreshSequence = useRef(0);
+  // A plugin reload or a dropped connection to the bb server fails one call.
+  // Retry quietly with backoff and keep the last list on screen; show the
+  // error only once failures persist.
+  const failures = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectionState = useRealtimeConnectionState();
   const previousConnection = useRef(connectionState);
+  const refreshRef = useRef<() => unknown>(() => undefined);
   const refresh = useCallback(() => {
     const sequence = ++refreshSequence.current;
+    if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null; }
     return rpc.call("bots_list").then(
       (result) => {
         if (sequence !== refreshSequence.current) return result;
@@ -141,16 +148,20 @@ function useBotData() {
         setProjectOwners(result.projectOwners ?? []);
         setLoaded(true);
         setError(null);
+        failures.current = 0;
         return result;
       },
       (cause) => {
         if (sequence !== refreshSequence.current) return;
-        setLoaded(true);
-        setError(cause instanceof Error ? cause.message : String(cause));
+        failures.current += 1;
+        if (failures.current >= 3) { setLoaded(true); setError(cause instanceof Error ? cause.message : String(cause)); }
+        const delay = Math.min(30_000, 1_000 * 2 ** (failures.current - 1));
+        retryTimer.current = setTimeout(() => { retryTimer.current = null; refreshRef.current(); }, delay);
       },
     );
   }, [rpc]);
-  useEffect(() => { void refresh(); return () => { refreshSequence.current++; }; }, [refresh]);
+  refreshRef.current = refresh;
+  useEffect(() => { void refresh(); return () => { refreshSequence.current++; if (retryTimer.current) clearTimeout(retryTimer.current); }; }, [refresh]);
   useEffect(() => {
     if (connectionState === "connected" && previousConnection.current !== "connected") void refresh();
     previousConnection.current = connectionState;
