@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import type { BbPluginApi, NewThreadRequest, PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
@@ -344,6 +345,16 @@ export default async function plugin(bb: BbPluginApi) {
       const saved = store.sections(); const section = saved.find((section) => section.id === sectionId);
       if (!section) throw new Error("Section no longer exists");
       const next = { ...section, name }; store.saveSections(saved.map((entry) => entry.id === sectionId ? next : entry)); publish(); return next;
+    }),
+    bot_delete: ({ botId, confirmName }) => serial(botId, async () => {
+      const bot = store.require(botId);
+      if (bot.name !== confirmName) throw new Error("confirmName must match the bot's exact name");
+      const directory = state.directory(botId);
+      const unboundThreads = store.remove(botId);
+      // The private export is derived from the database; removing it after the
+      // committed delete can only leave a stale folder, never orphaned state.
+      rmSync(directory, { recursive: true, force: true });
+      publish(); return { ok: true as const, unboundThreads };
     }),
     section_delete: ({ sectionId }) => serial("registry", async () => {
       validateSection(sectionId);

@@ -152,6 +152,18 @@ export function createBotStore(bb: BbPluginApi) {
     pendingStartContext(token: string): { botId: string; projectId: string | null } | null { return db.prepare("SELECT bot_id AS botId, project_id AS projectId FROM bot_starts WHERE token = ?").get(token) as { botId: string; projectId: string | null } | undefined ?? null; },
     pendingStart(token: string): string | null { return (db.prepare("SELECT bot_id FROM bot_starts WHERE token = ?").get(token) as { bot_id: string } | undefined)?.bot_id ?? null; },
     finishStart(token: string, threadId: string) { db.transaction(() => { const botId = this.pendingStart(token); if (!botId) throw new Error("Unknown bot conversation start"); bind(threadId, botId); db.prepare("DELETE FROM bot_starts WHERE token = ?").run(token); })(); },
+    // Deletes the bot and everything keyed by it. Its conversations stay in BB
+    // and fall back to unassigned Chats. Returns how many threads were unbound.
+    remove(id: string): number {
+      return db.transaction(() => {
+        const unbound = db.prepare("DELETE FROM bot_threads WHERE bot_id = ?").run(id).changes;
+        db.prepare("DELETE FROM bot_starts WHERE bot_id = ?").run(id);
+        db.prepare("DELETE FROM bot_project_owners WHERE bot_id = ?").run(id);
+        db.prepare("DELETE FROM bot_state WHERE key IN (?, ?, ?)").run(`legacy-state:${id}`, `legacy-record:${id}`, `private-state-warning:${id}`);
+        if (db.prepare("DELETE FROM bots WHERE id = ?").run(id).changes !== 1) throw new Error("Bot no longer exists");
+        return unbound;
+      })();
+    },
     cancelStart(token: string) { db.prepare("DELETE FROM bot_starts WHERE token = ?").run(token); },
   };
 }

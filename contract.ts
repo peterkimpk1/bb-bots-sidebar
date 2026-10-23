@@ -96,6 +96,7 @@ export const rpcContract = defineRpcContract({
   bots_reorder: { input: z.object({ bots: z.array(z.object({ botId: id, sectionId: id.nullable() }).strict()).max(500) }).strict(), output: z.object({ ok: z.literal(true) }).strict() },
   section_create: { input: z.object({ name: z.string().trim().min(1).max(80) }).strict(), output: sectionSchema },
   section_update: { input: z.object({ sectionId: id, name: z.string().trim().min(1).max(80) }).strict(), output: sectionSchema },
+  bot_delete: { input: z.object({ botId: id, confirmName: z.string() }).strict(), output: z.object({ ok: z.literal(true), unboundThreads: z.number().int().nonnegative() }).strict() },
   section_delete: { input: z.object({ sectionId: id }).strict(), output: z.object({ ok: z.literal(true) }).strict() },
   visibility_set: { input: z.object({ botId: id, hiddenUntilActivity: z.boolean() }).strict(), output: metadataSchema },
   main_set: { input: z.object({ botId: id, threadId: id }).strict(), output: metadataSchema },
