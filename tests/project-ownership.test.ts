@@ -259,3 +259,11 @@ it("unassigns a conversation back to Chats and drops it from the bot's order", a
   expect(host.store.require(bot.id).threadOrder ?? []).not.toContain(thread.id);
   expect(await host.harness.behavior.callRpc("conversation_unassign", { threadId: thread.id })).toEqual({ ok: true, botId: null });
 });
+
+it("placeFirst on a bot's own conversation moves it to the top of the order", async () => {
+  const host = await setup(); const bot = await host.create("Atlas");
+  for (const id of ["one", "two"]) { fresh(host, id, { status: "idle" }); await host.harness.behavior.callRpc("conversation_assign", { botId: bot.id, threadId: id, placeFirst: false }); }
+  expect(host.store.require(bot.id).threadOrder).toEqual(["one", "two"]);
+  await host.harness.behavior.callRpc("conversation_assign", { botId: bot.id, threadId: "two", placeFirst: true });
+  expect(host.store.require(bot.id).threadOrder).toEqual(["two", "one"]);
+});

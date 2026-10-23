@@ -432,7 +432,11 @@ export default async function plugin(bb: BbPluginApi) {
       if (thread.archivedAt || thread.deletedAt) throw new Error("Restore this conversation before assigning it.");
       const existing = await resolveOwner(threadId, false);
       if (existing && existing !== botId) throw new Error("Conversation already belongs to another bot");
-      if (store.owner(threadId) === botId) return { ok: true } as const;
+      if (store.owner(threadId) === botId) {
+        // Dropping a bot's own conversation on it with placeFirst moves it to the top.
+        if (placeFirst) { store.mutate(botId, (latest) => ({ ...latest, threadOrder: [threadId, ...(latest.threadOrder ?? []).filter((id) => id !== threadId)], updatedAt: nextTimestamp(latest.updatedAt) })); publish(); }
+        return { ok: true } as const;
+      }
       const needsLink = thread.projectId !== await personalProjectId() && thread.projectId !== bot.legacyHomeProjectId && !bot.linkedProjectIds.includes(thread.projectId);
       if (needsLink) await validateLinks([thread.projectId]);
       // Membership and the new association commit together; a competing binding
