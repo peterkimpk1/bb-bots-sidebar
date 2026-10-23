@@ -146,6 +146,10 @@ export default async function plugin(bb: BbPluginApi) {
       return adopted.botId;
     }
     if (thread.originPluginId === bb.pluginId || (!atCreation && thread.status !== "pending")) return null;
+    // Only a conversation the user starts defaults to the project's owner. A
+    // child or fork of unassigned work stays with that work, so an agent
+    // fanning out under a non-bot thread never hands its workers to the owner.
+    if (thread.parentThreadId || thread.sourceThreadId) return null;
     const assigned = store.bindProjectDefault(thread.id, thread.projectId, thread.createdAt);
     if (assigned) publish();
     return assigned;
@@ -419,6 +423,9 @@ export default async function plugin(bb: BbPluginApi) {
       await bb.sdk.threads.update({ threadId, parentThreadId });
       publish();
       return { ok: true } as const;
+    }),
+    conversation_unassign: ({ threadId }) => serial("registry", async () => {
+      const botId = store.unbind(threadId); if (botId) publish(); return { ok: true as const, botId };
     }),
     conversation_assign: ({ botId, threadId, placeFirst }) => serial("registry", () => serial(botId, async () => {
       const bot = store.require(botId); const thread = await bb.sdk.threads.get({ threadId });

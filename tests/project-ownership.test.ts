@@ -234,3 +234,28 @@ it("supports owner claims in creation and excludes legacy homes from ownership",
   host.projects.push(project("legacy-home")); host.store.save({ ...host.store.require(bot.id), legacyHomeProjectId: "legacy-home" });
   await expect(role(host, bot.id, "own", "legacy-home")).rejects.toThrow(/legacy bot home/);
 });
+
+it("leaves children and forks of unassigned work unassigned, while a new root still defaults to the owner", async () => {
+  const host = await setup(); const bot = await host.create("Atlas", []);
+  await role(host, bot.id, "own");
+  fresh(host, "user-work", { createdAt: 1 });
+  const child = fresh(host, "agent-child", { parentThreadId: "user-work" });
+  const fork = fresh(host, "agent-fork", { sourceThreadId: "user-work" });
+  const root = fresh(host, "new-root");
+  for (const thread of [child, fork, root]) await host.harness.behavior.emitThreadEvent("thread.created", { thread });
+  await dispatch(host, child);
+  expect(host.store.owner(child.id)).toBeNull();
+  expect(host.store.owner(fork.id)).toBeNull();
+  expect(host.store.owner(root.id)).toBe(bot.id);
+});
+
+it("unassigns a conversation back to Chats and drops it from the bot's order", async () => {
+  const host = await setup(); const bot = await host.create("Atlas");
+  const thread = fresh(host, "captured", { status: "idle" });
+  await host.harness.behavior.callRpc("conversation_assign", { botId: bot.id, threadId: thread.id, placeFirst: true });
+  expect(host.store.require(bot.id).threadOrder).toContain(thread.id);
+  expect(await host.harness.behavior.callRpc("conversation_unassign", { threadId: thread.id })).toEqual({ ok: true, botId: bot.id });
+  expect(host.store.owner(thread.id)).toBeNull();
+  expect(host.store.require(bot.id).threadOrder ?? []).not.toContain(thread.id);
+  expect(await host.harness.behavior.callRpc("conversation_unassign", { threadId: thread.id })).toEqual({ ok: true, botId: null });
+});

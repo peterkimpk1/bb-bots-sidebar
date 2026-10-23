@@ -164,6 +164,18 @@ export function createBotStore(bb: BbPluginApi) {
         return unbound;
       })();
     },
+    // Removes a thread's bot binding so it returns to unassigned Chats. Its
+    // children keep their own bindings; the bot's order forgets the thread.
+    unbind(threadId: string): string | null {
+      return db.transaction(() => {
+        const botId = owner(threadId);
+        if (!botId) return null;
+        db.prepare("DELETE FROM bot_threads WHERE thread_id = ?").run(threadId);
+        const bot = get(botId);
+        if (bot) save({ ...bot, threadOrder: (bot.threadOrder ?? []).filter((id) => id !== threadId), mainThreadId: bot.mainThreadId === threadId ? null : bot.mainThreadId, updatedAt: nextTimestamp(bot.updatedAt) });
+        return botId;
+      })();
+    },
     cancelStart(token: string) { db.prepare("DELETE FROM bot_starts WHERE token = ?").run(token); },
   };
 }
