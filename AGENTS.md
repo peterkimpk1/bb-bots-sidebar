@@ -239,6 +239,9 @@ or reintroduce hover toolbars when making unrelated changes.
   `senderThreadId`. Default to the first visible ordered root; explicit reply threads must resolve
   to the recipient bot. Resolve sender identity from bindings/inheritance, not project ownership.
   Never forge a sender, auto-create a conversation, or change permissions/bindings to send.
+  Explicit `--spawn` is the one creating path: it reuses the bot-start token path to open a
+  new conversation for the recipient, nested under the invoking thread (required), with the
+  framed message as first prompt, bot launch defaults, and appended after existing rows.
 - Frame messages as asynchronous agent coordination, not user approval. Include an exact
   sender-conversation reply command and discourage acknowledgement-only loops.
   Test delivery with the SDK fake host; never send unsolicited live test messages.

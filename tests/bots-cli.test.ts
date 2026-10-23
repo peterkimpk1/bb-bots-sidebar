@@ -1,14 +1,14 @@
 import { frameBotMessage } from "../lib/bots-cli";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makePluginAgentConfigurationContext, makeQueueEntry, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { backend, project } from "./backend-fixture";
+import { backend, PERSONAL_ID, project } from "./backend-fixture";
 import { botProjectContext } from "../lib/project-context";
 import { botInstructions, BOT_GUIDANCE } from "../lib/bot-instructions";
 
 const hosts: Awaited<ReturnType<typeof backend>>[] = [];
 afterEach(async () => { for (const host of hosts.splice(0)) await host.harness.lifecycle.dispose(); });
-async function setup() {
-  const host = await backend(); hosts.push(host);
+async function setup(initialProjects?: Parameters<typeof backend>[0]) {
+  const host = await backend(initialProjects); hosts.push(host);
   const a = await host.create("Atlas"), b = await host.create("Beryl");
   for (const bot of [a,b]) {
     host.threads.set(bot.id, makeThreadResponse({ id: bot.id, projectId: "project" }));
@@ -181,4 +181,86 @@ it("keeps the actual message before delivery guidance and escapes bot names in i
   expect(framed).toContain("not user approval");
   expect(framed).toContain("    bb bots message");
   expect(framed).toContain("--thread '");
+});
+
+describe("bots CLI --spawn handoffs", () => {
+  type SpawnArgs = { projectId: string; parentThreadId?: string; title?: string; providerId?: string; model?: string; permissionMode?: string; executionInputSources?: Record<string, string>; environment: unknown; input: { text: string; visibility?: string }[] };
+  const spawnCalls = (host: Awaited<ReturnType<typeof backend>>) => host.harness.inspection.sdk.callsTo("threads.spawn").map(call => call[0] as SpawnArgs);
+
+  it("opens a new child conversation under the sender, bound to the recipient before its first configuration", async () => {
+    const { host, run, a, b, send } = await setup();
+    const result = await run(["message", b.name, "Please review the parser", "--spawn", "--title", "Parser review", "--json"], { threadId: a.id });
+    expect(result.exitCode).toBe(0);
+    const receipt = JSON.parse(result.stdout!);
+    expect(receipt).toMatchObject({ botId: b.id, parentThreadId: a.id, delivery: "spawned" });
+    const child = host.threads.get(receipt.threadId)!;
+    expect(child.parentThreadId).toBe(a.id);
+    expect(host.store.owner(receipt.threadId)).toBe(b.id);
+    // The parent belongs to Atlas; the first turn must still configure Beryl.
+    const config = host.initialConfigurations.find(entry => entry.threadId === receipt.threadId)!;
+    expect(config.instructions).toContain("You are Beryl.");
+    expect(config.instructions).not.toContain("You are Atlas.");
+    const [args] = spawnCalls(host);
+    expect(args).toMatchObject({ parentThreadId: a.id, title: "Parser review" });
+    // BB only accepts startedOnBehalfOf for forks; the framed message carries attribution.
+    expect(args).not.toHaveProperty("startedOnBehalfOf");
+    expect(args!.input[0]!.text).toContain("Please review the parser");
+    expect(args!.input[0]!.text).toContain(`bb bots message '${a.id}' '<reply>' --thread '${a.id}'`);
+    expect(args!.input[0]!.text).toContain("opened for this handoff");
+    expect(args!.input.at(-1)).toMatchObject({ visibility: "agent-only" });
+    expect(send).not.toHaveBeenCalled();
+    expect(host.store.require(b.id).mainThreadId).toBe(b.id);
+  });
+
+  it("keeps the recipient's first conversation as its default message destination", async () => {
+    const { host, run, a, b } = await setup();
+    const spawned = JSON.parse((await run(["message", b.id, "Handoff", "--spawn", "--json"], { threadId: a.id })).stdout!);
+    expect(host.store.require(b.id).threadOrder).toEqual([b.id, spawned.threadId]);
+    expect((await run(["message", b.id, "Plain follow-up"], { threadId: a.id })).exitCode).toBe(0);
+    expect(host.harness.inspection.sdk.callsTo("threads.send").at(-1)?.[0]).toMatchObject({ threadId: b.id });
+    const text = (await run(["message", b.id, "Second", "--spawn"], { threadId: a.id })).stdout!;
+    expect(text).toMatch(/^Spawned conversation thread-\d+ for Beryl/);
+  });
+
+  it("follows the recipient's ownership, machine and launch preset defaults from a personal sender", async () => {
+    const { host, run, a, b } = await setup();
+    host.threads.set(a.id, makeThreadResponse({ id: a.id, projectId: PERSONAL_ID }));
+    const personal = JSON.parse((await run(["message", b.id, "Personal default", "--spawn", "--json"], { threadId: a.id })).stdout!);
+    expect(personal).toMatchObject({ parentThreadId: a.id, delivery: "spawned" });
+    expect(spawnCalls(host)[0]).toMatchObject({ projectId: PERSONAL_ID, environment: { type: "host", hostId: "host-home", workspace: { type: "personal" } } });
+    expect(spawnCalls(host)[0]).not.toHaveProperty("providerId");
+    host.store.changeProjectRole(b.id, "project", "own");
+    host.store.mutate(b.id, bot => ({ ...bot, launchPreset: { execution: { providerId: "codex", model: "gpt", reasoningLevel: "high", permissionMode: "auto" }, workspace: "worktree", initialPrompt: "Ignored starter" } }));
+    const unnested = JSON.parse((await run(["message", b.id, "Owned default", "--spawn", "--json"], { threadId: a.id })).stdout!);
+    // BB cannot nest a work-project child under a personal parent.
+    expect(unnested).toMatchObject({ parentThreadId: null, projectId: "project", delivery: "spawned-unnested" });
+    const owned = spawnCalls(host)[1]!;
+    expect(owned).not.toHaveProperty("parentThreadId");
+    expect(owned).toMatchObject({ projectId: "project", providerId: "codex", model: "gpt", permissionMode: "auto",
+      executionInputSources: { providerId: "explicit", model: "explicit", reasoningLevel: "explicit", permissionMode: "explicit" },
+      environment: { type: "host", hostId: "host-home", workspace: { type: "managed-worktree", baseBranch: { kind: "default" } } } });
+    expect(JSON.stringify(owned.input)).not.toContain("Ignored starter");
+  });
+
+  it("keeps a handoff in the sender's work project even when the recipient owns another", async () => {
+    const { host, run, a, b } = await setup([project(), project("other")]);
+    host.store.changeProjectRole(b.id, "other", "own");
+    const receipt = JSON.parse((await run(["message", b.id, "Cross-project work", "--spawn", "--json"], { threadId: a.id })).stdout!);
+    expect(receipt).toMatchObject({ parentThreadId: a.id, projectId: "project", delivery: "spawned" });
+    expect(host.threads.get(receipt.threadId)!.parentThreadId).toBe(a.id);
+    expect(host.store.owner(receipt.threadId)).toBe(b.id);
+    expect(host.store.require(b.id).linkedProjectIds).toContain("project");
+  });
+
+  it("rejects invalid handoffs without creating conversations", async () => {
+    const { host, run, a, b } = await setup();
+    expect((await run(["message", b.id, "Hi", "--spawn"])).stderr).toContain("inside a BB thread");
+    expect((await run(["message", b.id, "Hi", "--spawn", "--thread", b.id], { threadId: a.id })).exitCode).toBe(1);
+    expect((await run(["message", b.id, "Hi", "--title", "x"], { threadId: a.id })).stderr).toContain("only applies with --spawn");
+    expect((await run(["message", b.id, "Hi", "--spawn", "--title", "x".repeat(201)], { threadId: a.id })).exitCode).toBe(1);
+    expect((await run(["message", b.id, "Hi", "--spawn", "--spawn"], { threadId: a.id })).exitCode).toBe(1);
+    host.threads.set(a.id, makeThreadResponse({ id: a.id, projectId: "project", archivedAt: 1 }));
+    expect((await run(["message", b.id, "Hi", "--spawn"], { threadId: a.id })).stderr).toContain("archived");
+    expect(spawnCalls(host)).toHaveLength(0);
+  });
 });

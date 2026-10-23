@@ -54,6 +54,8 @@ export async function backend(initialProjects: Project[] = [project()]) {
       get: async ({ threadId }) => { const found = threads.get(threadId); if (!found) throw new Error("Thread missing"); return found; },
       spawn: async (args) => {
         if (failSpawn) throw new Error("Spawn failed");
+        // Mirrors BB's thread-parent validation: a child must share its parent's project.
+        if (args.parentThreadId && threads.get(args.parentThreadId)?.projectId !== args.projectId) throw new Error("Parent thread must belong to the same project");
         const value = makeThreadResponse({ id: `thread-${++sequence}`, projectId: args.projectId, originPluginId: host.bb.pluginId, parentThreadId: args.parentThreadId ?? null, createdAt: Date.now() });
         threads.set(value.id, value);
         const created = await host.harness.behavior.emitThreadEvent("thread.created", { thread: value });
@@ -61,7 +63,7 @@ export async function backend(initialProjects: Project[] = [project()]) {
         if (!args.sendAt) {
           const blocks = "input" in args ? args.input! : [];
           await host.harness.inspection.registrations.hooks["message.dispatch"]!(makeMessageDispatchHookContext({ thread: value, project: { id: args.projectId }, input: { blocks, text: "" }, originPluginId: host.bb.pluginId, origin: "plugin" }));
-          const config = await host.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: value.id }, project: { id: args.projectId, kind: args.projectId === PERSONAL_ID ? "personal" : "standard" } }));
+          const config = await host.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: value.id, parentThreadId: value.parentThreadId }, project: { id: args.projectId, kind: args.projectId === PERSONAL_ID ? "personal" : "standard" } }));
           initialConfigurations.push({ threadId: value.id, instructions: config.instructions, tools: config.tools.map((tool) => tool.name) });
         }
         return value;

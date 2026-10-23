@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { BbPluginApi, PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
+import type { BbPluginApi, NewThreadRequest, PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
 import { rpcContract, stateReadSchema, stateMutationSchema, stateMutationToolSchema, stateMutationResultSchema, normalizeStateMutation, type BotMetadata, type BotStateMutation } from "./contract";
 import { createBotStore, EMPTY_HASHES, nextTimestamp } from "./lib/bot-store";
@@ -11,6 +11,8 @@ import { registerBotsCli } from "./lib/bots-cli";
 import { registerBotMentions } from "./lib/bot-mentions";
 import { listBotConversations } from "./lib/bot-conversations";
 import { botProjectContext } from "./lib/project-context";
+import { handoffStartRequest, type BotStartRequest } from "./lib/handoff";
+import { ownedConversationProjectId } from "./lib/worktree-launch";
 import { BOT_GUIDANCE, botInstructions } from "./lib/bot-instructions";
 import { MEMORY_MAX_CHARS, validateMemory } from "./lib/memory-limit";
 export { rpcContract, avatarSchema } from "./contract";
@@ -212,6 +214,54 @@ export default async function plugin(bb: BbPluginApi) {
       throw new Error("State changed too often; read it again and retry");
     });
   }
+  type StartOptions = {
+    main: "set" | "if-missing" | "keep";
+    parentThreadId?: string; title?: string;
+    // Pin the current visible order and place the new conversation last.
+    appendAfter?: string[];
+  };
+  // The staged bb-bot-start token binds the thread in message.dispatch, before
+  // first-turn agent configuration. This wins over parent/fork inheritance, so a
+  // child spawned under another bot's conversation is never captured by it.
+  async function startBotConversation(botId: string, request: BotStartRequest, options: StartOptions) {
+    if (request.projectId !== await personalProjectId()) await updateProjectRole(botId, "join", request.projectId);
+    return serial(botId, async () => {
+      const bot = await state.prepare(botId);
+      await validateConversationProject(bot, request.projectId);
+      const token = randomUUID(); store.stageStart(token, botId, request.projectId);
+      const thread = await bb.sdk.threads.spawn({
+        ...request,
+        ...(options.parentThreadId ? { parentThreadId: options.parentThreadId } : {}),
+        ...(options.title ? { title: options.title } : {}),
+        input: [...request.input, { type: "text", text: `[bb-bot-start:${token}]\nThis conversation belongs to bot ${bot.name}. Its identity and memory are embedded and managed by bot_read_state / bot_update_state, not files in the working directory.`, mentions: [], visibility: "agent-only" }],
+      });
+      store.bind(thread.id, botId); store.cancelStart(token);
+      if (options.main === "set" || (options.main === "if-missing" && !store.require(botId).mainThreadId)) { const latest = store.require(botId); store.save({ ...latest, mainThreadId: thread.id, updatedAt: nextTimestamp(latest.updatedAt) }); }
+      const appendAfter = options.appendAfter;
+      if (appendAfter) store.mutate(botId, (latest) => ({ ...latest, threadOrder: [...new Set([...(latest.threadOrder ?? []), ...appendAfter].filter(id => id !== thread.id)), thread.id], updatedAt: nextTimestamp(latest.updatedAt) }));
+      publish(); return { threadId: thread.id, projectId: thread.projectId };
+    });
+  }
+  // CLI handoff: a new conversation for the target bot, nested under the sender.
+  async function spawnHandoff(bot: BotMetadata, { input, parentThreadId, title }: { input: NewThreadRequest["input"]; parentThreadId: string; title?: string }) {
+    const prepared = await serial(bot.id, () => state.prepare(bot.id));
+    const personal = await personalProjectId();
+    const { rows, roots } = await listBotConversations(bb, prepared, resolveOwner);
+    const legacyHomes = new Set(store.list().map((entry) => entry.legacyHomeProjectId));
+    const projects = (await bb.sdk.projects.list()).filter((project) => project.kind === "standard" && !legacyHomes.has(project.id));
+    const owned = ownedConversationProjectId({ bot: prepared, projects, owners: store.projectOwners(), personalProjectId: personal, main: roots[0] ?? null });
+    // BB only nests a child in its parent's project. A sender in a work project
+    // keeps the handoff there (the recipient joins it). A personal sender can only
+    // nest a personal handoff; work for the recipient's own project starts unnested.
+    const sender = await bb.sdk.threads.get({ threadId: parentThreadId });
+    const senderWork = projects.some((project) => project.id === sender.projectId) ? sender.projectId : null;
+    const projectId = senderWork ?? owned;
+    const nested = (projectId ?? personal) === sender.projectId;
+    // Handoffs never displace the bot's first conversation (its click target and
+    // default message destination); they are appended after existing rows.
+    const created = await startBotConversation(bot.id, handoffStartRequest(prepared, projectId, personal, input), { main: "keep", ...(nested ? { parentThreadId } : {}), title, appendAfter: rows.map((row) => row.id) });
+    return { ...created, nested };
+  }
   const contextOwner = (ctx: PluginAgentConfigurationContext) => owner(ctx.thread);
   bb.agents.configure((ctx) => {
     const botId = contextOwner(ctx);
@@ -253,7 +303,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on("thread.created", async ({ thread }) => { await routeNewThread(thread, true); });
 
-  registerBotsCli(bb, store, resolveOwner);
+  registerBotsCli(bb, store, resolveOwner, spawnHandoff);
   registerBotMentions(bb, store);
 
   bb.rpc.register(rpcContract, {
@@ -310,18 +360,7 @@ export default async function plugin(bb: BbPluginApi) {
       const latest = store.require(botId);
       const next = store.save({ ...latest, mainThreadId: threadId, updatedAt: nextTimestamp(latest.updatedAt) }); publish(); return next;
     }),
-    conversation_create: async ({ botId, request, makeMain }) => {
-      if (request.projectId !== await personalProjectId()) await updateProjectRole(botId, "join", request.projectId);
-      return serial(botId, async () => {
-        const bot = await state.prepare(botId);
-        await validateConversationProject(bot, request.projectId);
-        const token = randomUUID(); store.stageStart(token, botId, request.projectId);
-        const thread = await bb.sdk.threads.spawn({ ...request, input: [...request.input, { type: "text", text: `[bb-bot-start:${token}]\nThis conversation belongs to bot ${bot.name}. Its identity and memory are embedded and managed by bot_read_state / bot_update_state, not files in the working directory.`, mentions: [], visibility: "agent-only" }] });
-        store.bind(thread.id, botId); store.cancelStart(token);
-        if (makeMain || !store.require(botId).mainThreadId) { const latest = store.require(botId); store.save({ ...latest, mainThreadId: thread.id, updatedAt: nextTimestamp(latest.updatedAt) }); }
-        publish(); return { threadId: thread.id };
-      });
-    },
+    conversation_create: async ({ botId, request, makeMain }) => ({ threadId: (await startBotConversation(botId, request, { main: makeMain ? "set" : "if-missing" })).threadId }),
     conversation_fork: async ({ botId, sourceThreadId, request }) => serial(botId, async () => {
       const bot = await state.prepare(botId);
       const source = await bb.sdk.threads.get({ threadId: sourceThreadId });
