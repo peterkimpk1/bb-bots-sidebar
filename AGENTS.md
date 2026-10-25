@@ -245,3 +245,9 @@ or reintroduce hover toolbars when making unrelated changes.
 - Frame messages as asynchronous agent coordination, not user approval. Include an exact
   sender-conversation reply command and discourage acknowledgement-only loops.
   Test delivery with the SDK fake host; never send unsolicited live test messages.
+- Desk replacement (`desk_replace`, `bb bots desk`) is the one path that archives a
+  bot conversation. It moves the old desk's live children under the new desk BEFORE
+  archiving (archive cascades to children), binds the new desk through the bot-start
+  token, places it first, and retargets automations through the `automations` plugin RPC.
+  Never replace the caller's own conversation (`skipThreadId`); process bots one at a time.
+  Desk models live in settings.json (`desk`, dated `deskOverride`); a permanent choice clears the override.

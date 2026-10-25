@@ -29,6 +29,8 @@ export async function backend(initialProjects: Project[] = [project()]) {
   const get = (hostId: string, path: string) => files.get(key(hostId, path));
   let sequence = 0;
   let failSpawn = false;
+  const spawns: Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0][] = [];
+  const events: string[] = [];
   let host = createFakePluginHost({ pluginId: "bots-sidebar", agentSkillIds: ["bots-sidebar"], sdk: {
     projects: {
       list: async (args) => args?.includePersonal ? [...projects, personal] : projects,
@@ -54,9 +56,10 @@ export async function backend(initialProjects: Project[] = [project()]) {
       get: async ({ threadId }) => { const found = threads.get(threadId); if (!found) throw new Error("Thread missing"); return found; },
       spawn: async (args) => {
         if (failSpawn) throw new Error("Spawn failed");
+        spawns.push(args);
         // Mirrors BB's thread-parent validation: a child must share its parent's project.
         if (args.parentThreadId && threads.get(args.parentThreadId)?.projectId !== args.projectId) throw new Error("Parent thread must belong to the same project");
-        const value = makeThreadResponse({ id: `thread-${++sequence}`, projectId: args.projectId, originPluginId: host.bb.pluginId, parentThreadId: args.parentThreadId ?? null, createdAt: Date.now() });
+        const value = makeThreadResponse({ id: `thread-${++sequence}`, projectId: args.projectId, originPluginId: host.bb.pluginId, parentThreadId: args.parentThreadId ?? null, title: args.title ?? null, providerId: args.providerId ?? "pi", createdAt: Date.now() });
         threads.set(value.id, value);
         const created = await host.harness.behavior.emitThreadEvent("thread.created", { thread: value });
         if (created.errors.length) throw created.errors[0];
@@ -68,12 +71,26 @@ export async function backend(initialProjects: Project[] = [project()]) {
         }
         return value;
       },
+      update: async ({ threadId, ...patch }) => {
+        const found = threads.get(threadId); if (!found) throw new Error("Thread missing");
+        if (patch.parentThreadId && threads.get(patch.parentThreadId)?.projectId !== found.projectId) throw new Error("Parent thread must belong to the same project");
+        events.push(`update:${threadId}`);
+        const next = { ...found, ...(patch.parentThreadId !== undefined ? { parentThreadId: patch.parentThreadId } : {}), ...(patch.title !== undefined ? { title: patch.title } : {}) };
+        threads.set(threadId, next); return next;
+      },
+      // Mirrors BB: archiving a thread archives its descendants.
+      archive: async ({ threadId }) => {
+        events.push(`archive:${threadId}`);
+        const archive = (id: string) => { const found = threads.get(id); if (!found) return; threads.set(id, { ...found, archivedAt: Date.now() }); for (const child of [...threads.values()].filter((t) => t.parentThreadId === id && !t.archivedAt)) archive(child.id); };
+        if (!threads.has(threadId)) throw new Error("Thread missing");
+        archive(threadId); return threads.get(threadId)!;
+      },
     },
   } });
   await plugin(host.bb);
   let store = createBotStore(host.bb);
   return {
-    projects, threads, files, offline, put, get, initialConfigurations,
+    projects, threads, files, offline, put, get, initialConfigurations, spawns, events,
     get bb() { return host.bb; }, get harness() { return host.harness; }, get store() { return store; },
     stateDirectory(botId: string) { return join(dirname(store.databasePath), "state", botId); },
     seedLegacy(value: unknown) { const parsed = value as { id: string }; host.bb.storage.database().prepare("INSERT OR REPLACE INTO bots(id,data) VALUES (?,?)").run(parsed.id, JSON.stringify(value)); },

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AVATAR_EXPRESSION_IDS, AVATAR_MOTION_IDS, AVATAR_SHAPE_IDS } from "./lib/appearance";
 import { newThreadRequestSchema } from "./lib/new-thread-request";
 import { launchPresetSchema } from "./lib/launch-preset";
+import { deskModelInputSchema } from "./lib/desk";
 
 import { MEMORY_MAX_CHARS, MEMORY_LIMIT_ERROR } from "./lib/memory-limit";
 
@@ -86,6 +87,29 @@ export const stateMutationToolSchema = z.object({
 });
 export const stateMutationResultSchema = z.object({ botId: id, target: stateTargetSchema, changed: z.boolean(), revision: z.number(), state: z.json() }).strict();
 
+const deskOverrideSchema = deskModelInputSchema.extend({ until: z.string() }).strict();
+export const deskReplaceInputSchema = z.object({
+  botIds: z.array(id).min(1).max(20),
+  // Given without until: the bot's desk model. With until: a temporary override.
+  // Omitted or null: replace on the bot's current effective desk model.
+  desk: deskModelInputSchema.nullable().optional(),
+  until: z.iso.datetime({ offset: true }).nullable().optional(),
+  // A conversation that must not be replaced, normally the caller's own.
+  skipThreadId: id.optional(),
+}).strict();
+const deskReplaceResultSchema = z.object({
+  botId: id, oldDeskId: id.nullable(), newDeskId: id.nullable(), moved: z.array(id), automationsRetargeted: z.array(z.string()),
+  automationsPending: z.array(z.string()).optional(), skipped: z.string().optional(), error: z.string().optional(),
+}).strict();
+export const deskStatusSchema = z.object({
+  botId: id, name: z.string(), deskId: id.nullable(), deskTitle: z.string().nullable(),
+  providerId: z.string().nullable(), model: z.string().nullable(), reasoningLevel: z.string().nullable(),
+  contextTokens: z.number().nullable(), liveChildren: z.number().int().nonnegative(),
+  desk: deskModelInputSchema.nullable(), deskOverride: deskOverrideSchema.nullable(),
+  effective: deskModelInputSchema.nullable(), effectiveSource: z.enum(["override", "desk", "launch", "default"]),
+}).strict();
+export type DeskStatusEntry = z.infer<typeof deskStatusSchema>;
+
 export const rpcContract = defineRpcContract({
   bots_list: { input: z.null(), output: z.object({ bots: z.array(metadataSchema), hosts: z.array(hostSchema), sections: z.array(sectionSchema), projects: z.array(projectSchema), threadBindings: z.array(z.object({ threadId: id, botId: id }).strict()), warnings: z.array(z.string()), personalProjectId: id, projectOwners: z.array(projectOwnerSchema).optional() }).strict() },
   project_browse: { input: projectBrowseInputSchema, output: projectBrowseOutputSchema },
@@ -110,4 +134,6 @@ export const rpcContract = defineRpcContract({
   state_read: { input: z.object({ botId: id, file: stateFileSchema }).strict(), output: stateOutput },
   state_update: { input: stateUpdateSchema.safeExtend({ botId: id }), output: stateOutput },
   state_apply: { input: z.object({ botId: id, change: stateMutationSchema }).strict(), output: stateMutationResultSchema },
+  desk_replace: { input: deskReplaceInputSchema, output: z.object({ results: z.array(deskReplaceResultSchema) }).strict() },
+  desk_status: { input: z.null(), output: z.object({ bots: z.array(deskStatusSchema) }).strict() },
 });

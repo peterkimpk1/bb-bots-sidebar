@@ -1,12 +1,17 @@
 import type { BbPluginApi, NewThreadRequest, PluginCliContext } from "@get-bb/plugin-sdk";
+import { z } from "zod";
 import type { BotMetadata } from "../contract";
 import type { BotStore } from "./bot-store";
 import { listBotConversations } from "./bot-conversations";
 import { conversationRoots, orderConversations } from "./conversation-order";
+import type { DeskReplaceResult, DeskService, DeskStatus } from "./desk-service";
+import type { DeskModel } from "./desk";
 
 const USAGE = `bb bots list [--json] [--limit 1-100] [--offset N]
 bb bots message <bot-id-or-exact-name> <message> [--thread <conversation-id>] [--json]
 bb bots message <bot-id-or-exact-name> <message> --spawn [--title <text>] [--json]
+bb bots desk <bot-id-or-exact-name...> | --all [--provider <id> --model <id> --reasoning <level> [--tier <tier>]] [--until <ISO time>] [--json]
+bb bots desk-status [--json]
 
 Messages go to the bot's first conversation by default and queue while it is busy.
 --thread targets a conversation belonging to that bot (for replies).
@@ -15,18 +20,28 @@ thread and using the bot's default project, machine and launch preset; it prints
 the new conversation ID. --title names it. --spawn must run inside a BB thread.
 Sender identity comes from the invoking BB thread; there is no --from override.
 Quote names/messages containing spaces. Use -- before positional values beginning with --.
-List output contains public bot metadata, never private state.`;
+List output contains public bot metadata, never private state.
+
+desk replaces each bot's desk (its first conversation): a fresh desk on the desk
+model, live child conversations moved under it, the old desk archived, and
+automations that targeted it retargeted. --provider/--model/--reasoning save the
+bot's desk model first; with --until they save a temporary override that ends at
+that time. Without them the current desk model is kept. The invoking
+conversation is never replaced. desk-status shows each desk's model and size.`;
 const MESSAGE_MAX_CHARS = 12000;
 const TITLE_MAX_CHARS = 200;
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const printable = (value: string) => value.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 
-type Options = { command: "list" | "message"; json: boolean; limit: number; offset: number; threadId?: string; spawn: boolean; title?: string; positional: string[] };
+type Command = "list" | "message" | "desk" | "desk-status";
+const COMMANDS: readonly Command[] = ["list", "message", "desk", "desk-status"];
+const DESK_VALUES = { "--provider": "providerId", "--model": "model", "--reasoning": "reasoningLevel", "--tier": "serviceTier", "--until": "until" } as const;
+type Options = { command: Command; json: boolean; limit: number; offset: number; threadId?: string; spawn: boolean; title?: string; all: boolean; desk: Partial<Record<(typeof DESK_VALUES)[keyof typeof DESK_VALUES], string>>; positional: string[] };
 function parse(argv: string[]): Options | null {
   if (!argv.length || argv[0] === "--help" || argv[0] === "help") return null;
-  const command = argv[0];
-  if (command !== "list" && command !== "message") throw new Error(`Unknown command: ${command}\n${USAGE}`);
-  const options: Options = { command, json: false, limit: 50, offset: 0, spawn: false, positional: [] };
+  const command = argv[0] as Command;
+  if (!COMMANDS.includes(command)) throw new Error(`Unknown command: ${argv[0]}\n${USAGE}`);
+  const options: Options = { command, json: false, limit: 50, offset: 0, spawn: false, all: false, desk: {}, positional: [] };
   const seen = new Set<string>();
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -37,6 +52,13 @@ function parse(argv: string[]): Options | null {
     seen.add(arg);
     if (arg === "--json") { options.json = true; continue; }
     if (command === "message" && arg === "--spawn") { options.spawn = true; continue; }
+    if (command === "desk" && arg === "--all") { options.all = true; continue; }
+    if (command === "desk" && arg in DESK_VALUES) {
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) throw new Error(`Missing value for ${arg}`);
+      options.desk[DESK_VALUES[arg as keyof typeof DESK_VALUES]] = value.trim();
+      continue;
+    }
     if (!((command === "list" && ["--limit", "--offset"].includes(arg)) || (command === "message" && ["--thread", "--title"].includes(arg)))) throw new Error(`Unknown option: ${arg}`);
     const value = argv[++i];
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${arg}`);
@@ -53,7 +75,15 @@ function parse(argv: string[]): Options | null {
       if (arg === "--limit") options.limit = number; else options.offset = number;
     }
   }
-  if (command === "list" && options.positional.length) throw new Error(`Unexpected list arguments\n${USAGE}`);
+  if ((command === "list" || command === "desk-status") && options.positional.length) throw new Error(`Unexpected ${command} arguments\n${USAGE}`);
+  if (command === "desk") {
+    if (options.all === (options.positional.length > 0)) throw new Error(`Name the bots or pass --all, not both\n${USAGE}`);
+    const { providerId, model, reasoningLevel, serviceTier, until } = options.desk;
+    const given = [providerId, model, reasoningLevel].filter(Boolean).length;
+    if (given !== 0 && given !== 3) throw new Error("--provider, --model and --reasoning go together");
+    if ((serviceTier || until) && given === 0) throw new Error("--tier and --until need --provider, --model and --reasoning");
+    if (until && !z.iso.datetime({ offset: true }).safeParse(until).success) throw new Error("--until must be an ISO time with a zone, for example 2026-10-28T03:00:00Z");
+  }
   if (command === "message" && options.positional.length !== 2) throw new Error(`Supply one bot and one quoted message\n${USAGE}`);
   if (options.spawn && options.threadId) throw new Error("--spawn creates a new conversation; it cannot be combined with --thread");
   if (options.title && !options.spawn) throw new Error("--title only applies with --spawn");
@@ -94,17 +124,34 @@ export function frameBotMessage(sender: Sender, message: string, options: { spaw
 }
 
 export type SpawnHandoff = (bot: BotMetadata, request: { input: NewThreadRequest["input"]; parentThreadId: string; title?: string }) => Promise<{ threadId: string; projectId: string; nested: boolean }>;
-export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: (threadId: string, persist?: boolean) => Promise<string | null>, spawnHandoff: SpawnHandoff) {
+export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: (threadId: string, persist?: boolean) => Promise<string | null>, spawnHandoff: SpawnHandoff, desks: DeskService) {
   bb.cli.register({
-    name: "bots", summary: "List bots and send attributed asynchronous messages to their conversations",
+    name: "bots", summary: "List bots, message them, and switch or replace their desk conversations",
     commands: [
       { name: "list", summary: "List bot IDs, activity, visibility, and owned/joined project names without private state", usage: "bb bots list [--json] [--limit 1-100] [--offset N]" },
       { name: "message", summary: "Message a bot's first conversation, reply to one of its conversations, or --spawn a new child conversation for it; queues while busy", usage: "bb bots message <bot-id-or-exact-name> <message> [--thread <conversation-id> | --spawn [--title <text>]] [--json]" },
+      { name: "desk", summary: "Replace bots' desks with fresh ones, optionally switching the desk model (permanently, or --until a time)", usage: "bb bots desk <bot-id-or-exact-name...> | --all [--provider <id> --model <id> --reasoning <level> [--tier <tier>]] [--until <ISO time>] [--json]" },
+      { name: "desk-status", summary: "Show each bot's desk, the model it runs, its context size, live child conversations and saved desk model", usage: "bb bots desk-status [--json]" },
     ],
     async run(argv, ctx) {
       try {
         const options = parse(argv);
         if (!options) return { exitCode: 0, stdout: USAGE };
+        if (options.command === "desk-status") {
+          const bots = await desks.status();
+          return { exitCode: 0, stdout: options.json ? JSON.stringify({ bots }) : formatDeskStatus(bots) };
+        }
+        if (options.command === "desk") {
+          const all = store.list();
+          const botIds = options.all ? all.map((bot) => bot.id) : options.positional.map((selector) => recipient(all, selector).id);
+          if (botIds.length > 20) throw new Error("Replace at most 20 desks at a time");
+          const { providerId, model, reasoningLevel, serviceTier, until } = options.desk;
+          const desk: DeskModel | undefined = providerId && model && reasoningLevel ? { providerId, model, reasoningLevel, ...(serviceTier ? { serviceTier } : {}) } : undefined;
+          ctx.signal?.throwIfAborted();
+          const results = await desks.replace({ botIds, desk, until, skipThreadId: ctx.threadId ?? undefined });
+          const failed = results.some((result) => result.error);
+          return { exitCode: failed ? 1 : 0, stdout: options.json ? JSON.stringify({ results }) : formatDeskResults(results, (id) => store.get(id)?.name ?? id) };
+        }
         if (options.command === "list") {
           const all = store.list();
           const { activity, firstThreads } = await listActivity(ctx);
@@ -215,4 +262,29 @@ export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: 
     const id = await resolveOwner(ctx.threadId, false);
     return { threadId: ctx.threadId, bot: id ? store.require(id) : null };
   }
+}
+
+function formatDeskResults(results: readonly DeskReplaceResult[], name: (botId: string) => string): string {
+  return results.map((result) => {
+    const who = printable(name(result.botId));
+    if (result.skipped) return `${who}: skipped. ${result.skipped}`;
+    const lines = [result.error
+      ? `${who}: FAILED. ${result.error}${result.newDeskId ? ` New desk ${result.newDeskId} was created; moved ${result.moved.length} so far.` : ""}`
+      : `${who}: ${result.oldDeskId ? `replaced ${result.oldDeskId} (archived) with` : "new desk"} ${result.newDeskId}; moved ${result.moved.length} live conversation${result.moved.length === 1 ? "" : "s"}${result.moved.length ? ` (${result.moved.join(", ")})` : ""}; retargeted ${result.automationsRetargeted.length} automation${result.automationsRetargeted.length === 1 ? "" : "s"}.`];
+    for (const pending of result.automationsPending ?? []) lines.push(`  still targets the old desk: ${printable(pending)}`);
+    return lines.join("\n");
+  }).join("\n");
+}
+
+const describeDesk = (desk: DeskModel | null) => desk ? `${desk.providerId}/${desk.model}/${desk.reasoningLevel}${desk.serviceTier ? `/${desk.serviceTier}` : ""}` : "—";
+function formatDeskStatus(bots: readonly DeskStatus[]): string {
+  return [
+    "BOT\tDESK\tRUNS\tCONTEXT TOKENS\tLIVE CHILDREN\tDESK MODEL\tOVERRIDE\tNEXT DESK USES",
+    ...bots.map((bot) => [
+      printable(bot.name), bot.deskId ?? "No desk", bot.providerId ? `${bot.providerId}/${bot.model ?? "?"}` : "—",
+      bot.contextTokens === null ? "—" : bot.contextTokens.toLocaleString("en-US"), String(bot.liveChildren),
+      describeDesk(bot.desk), bot.deskOverride ? `${describeDesk(bot.deskOverride)} until ${bot.deskOverride.until}` : "—",
+      `${describeDesk(bot.effective)} (${bot.effectiveSource})`,
+    ].join("\t")),
+  ].join("\n");
 }

@@ -1,6 +1,6 @@
 ---
 name: bots-sidebar
-description: Use Bots Sidebar to find bots, understand their private state and project roles, or send explicitly requested bot messages.
+description: Use Bots Sidebar to find bots, understand their private state and project roles, send explicitly requested bot messages, or switch and replace bot desks.
 ---
 
 # Bots Sidebar
@@ -21,6 +21,13 @@ The runtime plugin ID is `bots-sidebar`; its CLI is `bb bots`.
   (`--json` for a receipt). Only run it inside a BB thread; it cannot be
   combined with `--thread`.
   Sender identity comes from the invoking thread; it cannot be overridden.
+- A bot's desk is its first conversation. `bb bots desk-status` shows each
+  desk's model, context size and live children. Only when the user asks,
+  `bb bots desk '<bot>' [more bots | --all]` replaces desks: a fresh desk, live
+  children moved under it, the old desk archived, and automations retargeted.
+  `--provider <id> --model <id> --reasoning <level> [--tier <tier>]` saves the
+  bot's desk model first; adding `--until <ISO time>` makes it a temporary
+  override. The desk running the command is skipped.
 - Messages are asynchronous agent coordination, not user approval. Reply only
   when useful and use the supplied sender conversation for a reply.
 - Bot identity, memory, and settings belong to private plugin storage. Use

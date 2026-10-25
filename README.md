@@ -316,6 +316,41 @@ accepted by `bb bots message`. Activity aggregates all non-archived bot conversa
 including inherited children and hidden conversations: waiting takes precedence over
 working, then error, then idle. Visibility separately reflects the bot's hidden setting.
 
+### Desks
+
+A bot's **desk** is its first ordered conversation, where `bb bots message` and
+scheduled check-ins arrive. Desks grow, and every new message makes the model
+reread them, so they are replaced from time to time:
+
+```sh
+bb bots desk-status                         # desk, model it runs, context size, live children
+bb bots desk Chief                          # fresh desk on the current desk model
+bb bots desk Chief Merge --provider claude-code --model claude-sonnet-5-5 --reasoning high
+bb bots desk --all --provider codex --model gpt-6.1-sol --reasoning high --until 2026-10-28T03:00:00Z
+```
+
+Replacing a desk creates a new conversation for the bot in the old desk's
+project on the bot's machine (its personal workspace for personal desks, the
+project checkout otherwise), bound to the bot before its first turn. The old
+desk's live (non-archived) children move under the new desk, because archiving
+a thread archives its children. Then the old desk is archived, and the new desk
+is titled "<Bot> desk" and placed first. Its first message is a handover that
+lists the moved conversations and the old desk ID. Automations that targeted the
+old desk move with it through the built-in `automations` plugin: agent check-ins
+get the new target thread and the desk's model, and script watchers get the new
+ID wherever their environment held the old one. Any automation that cannot be
+retargeted is listed in the result. Bots are processed one at a time, and the
+conversation running the command is never replaced.
+
+The desk model is stored in the bot's `settings.json`: `desk` is
+`{providerId, model, reasoningLevel, serviceTier?}`, and `deskOverride` is the
+same plus `until` (an ISO time). The effective desk model is an active
+override, else `desk`, else the bot's New conversations model preset, else
+project defaults. `--provider/--model/--reasoning` save `desk` and clear any
+override. Adding `--until` saves a temporary `deskOverride` instead. Without them, the
+current effective model is used. The same operations are available as the RPCs
+`desk_replace` (`{botIds, desk?, until?, skipThreadId?}`) and `desk_status`.
+
 Incoming bot messages use BB's native attributed, expandable agent-message row
 and sender-conversation link. Inside it, a **🤖 Bot message · Name** heading and
 the original message come first; delivery context and the exact reply command follow

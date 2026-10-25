@@ -17,6 +17,7 @@ import { avatarMarkup } from "./lib/avatar-markup";
 import { ownedConversationProjectId } from "./lib/worktree-launch";
 import { BOT_GUIDANCE, botInstructions } from "./lib/bot-instructions";
 import { MEMORY_MAX_CHARS, validateMemory } from "./lib/memory-limit";
+import { createDeskService } from "./lib/desk-service";
 export { rpcContract, avatarSchema } from "./contract";
 export type { BotAvatar, BotMetadata, BotSection, ProjectCreateInput } from "./contract";
 
@@ -268,6 +269,15 @@ export default async function plugin(bb: BbPluginApi) {
     const created = await startBotConversation(bot.id, handoffStartRequest(prepared, projectId, personal, input), { main: "keep", ...(nested ? { parentThreadId } : {}), title, appendAfter: rows.map((row) => row.id) });
     return { ...created, nested };
   }
+  const desks = createDeskService({
+    bb, store, resolveOwner, personalProjectId, publish,
+    prepare: (botId) => serial(botId, () => state.prepare(botId)),
+    start: (botId, request, title) => startBotConversation(botId, request, { main: "set", title }),
+    async changeSettings(botId, values, keys) {
+      if (Object.keys(values).length) await applyBotState(botId, { target: "settings", action: "set", values });
+      if (keys.length) await applyBotState(botId, { target: "settings", action: "unset", keys });
+    },
+  });
   const contextOwner = (ctx: PluginAgentConfigurationContext) => owner(ctx.thread);
   bb.agents.configure((ctx) => {
     const botId = contextOwner(ctx);
@@ -309,7 +319,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on("thread.created", async ({ thread }) => { await routeNewThread(thread, true); });
 
-  registerBotsCli(bb, store, resolveOwner, spawnHandoff);
+  registerBotsCli(bb, store, resolveOwner, spawnHandoff, desks);
   registerBotMentions(bb, store);
 
   bb.rpc.register(rpcContract, {
@@ -453,5 +463,7 @@ export default async function plugin(bb: BbPluginApi) {
     state_read: ({ botId, file }) => serial(botId, async () => state.read(await state.prepare(botId), file)),
     state_update: ({ botId, file, content, expectedSha256 }) => serial(botId, async () => { await state.prepare(botId); return state.update(botId, file, content, expectedSha256); }),
     state_apply: ({ botId, change }) => applyBotState(botId, change),
+    desk_replace: (input) => serial("desk-replace", async () => ({ results: await desks.replace(input) })),
+    desk_status: async () => ({ bots: await desks.status() }),
   });
 }
