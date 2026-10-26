@@ -58,9 +58,15 @@ describe("desk_replace", () => {
     expect(result).toMatchObject({ botId: atlas.id, oldDeskId: desk, moved: ["Atlas-a", "Atlas-b"] });
     expect(result!.error).toBeUndefined();
     // Children moved before the archive, so the archive cannot take them with it.
-    expect(host.events).toEqual(["update:Atlas-a", "update:Atlas-b", `archive:${desk}`]);
+    expect(host.events).toEqual(["update:Atlas-a", "update:Atlas-a", "update:Atlas-b", "update:Atlas-b", `archive:${desk}`]);
     expect(host.threads.get(desk)!.archivedAt).not.toBeNull();
-    for (const child of ["Atlas-a", "Atlas-b"]) expect(host.threads.get(child)).toMatchObject({ parentThreadId: newDesk, archivedAt: null });
+    for (const child of ["Atlas-a", "Atlas-b"]) expect(host.threads.get(child)).toMatchObject({ parentThreadId: newDesk, parentNotifications: "stuck", archivedAt: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.update").map(call => call[0])).toEqual([
+      { threadId: "Atlas-a", parentNotifications: "stuck" },
+      { threadId: "Atlas-a", parentThreadId: newDesk },
+      { threadId: "Atlas-b", parentNotifications: "stuck" },
+      { threadId: "Atlas-b", parentThreadId: newDesk },
+    ]);
     expect(host.threads.get("Atlas-old")!.parentThreadId).toBe(desk);
     const saved = host.store.require(atlas.id);
     expect(saved.threadOrder![0]).toBe(newDesk);
@@ -68,12 +74,27 @@ describe("desk_replace", () => {
     expect(saved.mainThreadId).toBe(newDesk);
     expect(host.store.owner(newDesk)).toBe(atlas.id);
     const spawn = host.spawns.at(-1)!;
-    expect(spawn).toMatchObject({ projectId: "project", title: "Atlas desk", providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "high", permissionMode: "auto", environment: { type: "host", hostId: "host-home", workspace: { type: "unmanaged", path: null } } });
+    expect(spawn).toMatchObject({ projectId: "project", parentNotifications: "stuck", title: "Atlas desk", providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "high", permissionMode: "auto", environment: { type: "host", hostId: "host-home", workspace: { type: "unmanaged", path: null } } });
     const handover = (spawn.input as { text: string }[])[0]!.text;
     expect(handover).toContain(`You replace the previous desk ${desk}`);
     expect(handover).toContain("Atlas-a (Work a");
     expect(handover).not.toContain("Atlas-old");
     expect(host.store.require(atlas.id).settings.desk).toEqual(SOL);
+  });
+
+  it("leaves children and the old desk in place when quieting a child fails", async () => {
+    const { host, bot, replace } = await setup();
+    const { bot: atlas, desk } = await bot("Atlas");
+    host.harness.inspection.sdk.stub("threads.update", async () => { throw new Error("Notification update failed"); });
+    const [result] = await replace({ botIds: [atlas.id] });
+    expect(result).toMatchObject({ oldDeskId: desk, moved: [], error: "Notification update failed" });
+    expect(host.harness.inspection.sdk.callsTo("threads.update").map(call => call[0])).toEqual([
+      { threadId: "Atlas-a", parentNotifications: "stuck" },
+    ]);
+    expect(host.harness.inspection.sdk.callsTo("threads.archive")).toEqual([]);
+    for (const id of [desk, "Atlas-a", "Atlas-b"]) expect(host.threads.get(id)!.archivedAt).toBeNull();
+    expect(host.threads.get("Atlas-a")!.parentThreadId).toBe(desk);
+    expect(host.threads.get("Atlas-b")!.parentThreadId).toBe(desk);
   });
 
   it("starts a personal desk in the bot's personal workspace", async () => {

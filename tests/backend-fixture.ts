@@ -59,7 +59,7 @@ export async function backend(initialProjects: Project[] = [project()]) {
         spawns.push(args);
         // Mirrors BB's thread-parent validation: a child must share its parent's project.
         if (args.parentThreadId && threads.get(args.parentThreadId)?.projectId !== args.projectId) throw new Error("Parent thread must belong to the same project");
-        const value = makeThreadResponse({ id: `thread-${++sequence}`, projectId: args.projectId, originPluginId: host.bb.pluginId, parentThreadId: args.parentThreadId ?? null, title: args.title ?? null, providerId: args.providerId ?? "pi", createdAt: Date.now() });
+        const value = makeThreadResponse({ id: `thread-${++sequence}`, projectId: args.projectId, originPluginId: host.bb.pluginId, parentThreadId: args.parentThreadId ?? null, parentNotifications: args.parentNotifications ?? "auto", title: args.title ?? null, providerId: args.providerId ?? "pi", createdAt: Date.now() });
         threads.set(value.id, value);
         const created = await host.harness.behavior.emitThreadEvent("thread.created", { thread: value });
         if (created.errors.length) throw created.errors[0];
@@ -75,7 +75,7 @@ export async function backend(initialProjects: Project[] = [project()]) {
         const found = threads.get(threadId); if (!found) throw new Error("Thread missing");
         if (patch.parentThreadId && threads.get(patch.parentThreadId)?.projectId !== found.projectId) throw new Error("Parent thread must belong to the same project");
         events.push(`update:${threadId}`);
-        const next = { ...found, ...(patch.parentThreadId !== undefined ? { parentThreadId: patch.parentThreadId } : {}), ...(patch.title !== undefined ? { title: patch.title } : {}) };
+        const next = { ...found, ...(patch.parentNotifications !== undefined ? { parentNotifications: patch.parentNotifications } : {}), ...(patch.parentThreadId !== undefined ? { parentThreadId: patch.parentThreadId } : {}), ...(patch.title !== undefined ? { title: patch.title } : {}) };
         threads.set(threadId, next); return next;
       },
       // Mirrors BB: archiving a thread archives its descendants.

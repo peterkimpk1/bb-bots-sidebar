@@ -20,11 +20,15 @@ The runtime plugin ID is `bots-sidebar`; its CLI is `bb bots`.
   project, machine and launch preset, and prints the new conversation ID
   (`--json` for a receipt). Only run it inside a BB thread; it cannot be
   combined with `--thread`.
+  Spawned handoffs use parent notifications `stuck`: routine completions stay
+  silent; failures and blockers still reach the parent.
   Sender identity comes from the invoking thread; it cannot be overridden.
 - A bot's desk is its first conversation. `bb bots desk-status` shows each
   desk's model, context size and live children. Only when the user asks,
   `bb bots desk '<bot>' [more bots | --all]` replaces desks: a fresh desk, live
   children moved under it, the old desk archived, and automations retargeted.
+  New desks and moved children use parent notifications `stuck`; children are
+  updated before re-parenting so the move does not wake the new desk.
   `--provider <id> --model <id> --reasoning <level> [--tier <tier>]` saves the
   bot's desk model first; adding `--until <ISO time>` makes it a temporary
   override. The desk running the command is skipped.

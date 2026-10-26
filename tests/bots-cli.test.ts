@@ -194,14 +194,14 @@ describe("bots CLI --spawn handoffs", () => {
     const receipt = JSON.parse(result.stdout!);
     expect(receipt).toMatchObject({ botId: b.id, parentThreadId: a.id, delivery: "spawned" });
     const child = host.threads.get(receipt.threadId)!;
-    expect(child.parentThreadId).toBe(a.id);
+    expect(child).toMatchObject({ parentThreadId: a.id, parentNotifications: "stuck" });
     expect(host.store.owner(receipt.threadId)).toBe(b.id);
     // The parent belongs to Atlas; the first turn must still configure Beryl.
     const config = host.initialConfigurations.find(entry => entry.threadId === receipt.threadId)!;
     expect(config.instructions).toContain("You are Beryl.");
     expect(config.instructions).not.toContain("You are Atlas.");
     const [args] = spawnCalls(host);
-    expect(args).toMatchObject({ parentThreadId: a.id, title: "Parser review" });
+    expect(args).toMatchObject({ parentThreadId: a.id, parentNotifications: "stuck", title: "Parser review" });
     // BB only accepts startedOnBehalfOf for forks; the framed message carries attribution.
     expect(args).not.toHaveProperty("startedOnBehalfOf");
     expect(args!.input[0]!.text).toContain("Please review the parser");

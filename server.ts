@@ -238,6 +238,7 @@ export default async function plugin(bb: BbPluginApi) {
       const token = randomUUID(); store.stageStart(token, botId, request.projectId);
       const thread = await bb.sdk.threads.spawn({
         ...request,
+        parentNotifications: "stuck",
         ...(options.parentThreadId ? { parentThreadId: options.parentThreadId } : {}),
         ...(options.title ? { title: options.title } : {}),
         input: [...request.input, { type: "text", text: `[bb-bot-start:${token}]\nThis conversation belongs to bot ${bot.name}. Its identity and memory are embedded and managed by bot_read_state / bot_update_state, not files in the working directory.`, mentions: [], visibility: "agent-only" }],
