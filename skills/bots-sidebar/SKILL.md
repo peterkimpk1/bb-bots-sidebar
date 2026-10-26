@@ -28,7 +28,8 @@ The runtime plugin ID is `bots-sidebar`; its CLI is `bb bots`.
   `bb bots desk '<bot>' [more bots | --all]` replaces desks: a fresh desk, live
   children moved under it, the old desk archived, and automations retargeted.
   New desks and moved children use parent notifications `stuck`; children are
-  updated before re-parenting so the move does not wake the new desk.
+  updated before re-parenting. BB 0.47.1 still sends `ownership-assigned`
+  notices to the new desk independently of this policy.
   `--provider <id> --model <id> --reasoning <level> [--tier <tier>]` saves the
   bot's desk model first; adding `--until <ISO time>` makes it a temporary
   override. The desk running the command is skipped.

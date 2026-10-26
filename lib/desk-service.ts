@@ -174,8 +174,7 @@ export function createDeskService({ bb, store, prepare, personalProjectId, resol
       result.newDeskId = created.threadId;
       // Archiving a thread archives its children: move live work first.
       for (const child of live) {
-        // Ownership assignment consults the child’s current notification policy.
-        // Persist it before re-parenting so the move cannot wake the new desk.
+        // Persist the notification policy before transferring ownership.
         await bb.sdk.threads.update({ threadId: child.id, parentNotifications: "stuck" });
         await bb.sdk.threads.update({ threadId: child.id, parentThreadId: created.threadId });
         result.moved.push(child.id);
